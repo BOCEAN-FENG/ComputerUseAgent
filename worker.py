@@ -17,6 +17,7 @@ import httpx
 from PySide6.QtCore import QThread, Signal
 
 import engine
+from response_store import ResponseStore
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class RunConfig:
 
 class VisionTestThread(QThread):
     result = Signal(bool, str)
+    response_record = Signal(object)
 
     def __init__(self, config: RunConfig):
         super().__init__()
@@ -45,9 +47,12 @@ class VisionTestThread(QThread):
         c = self.config
         try:
             url = engine.resolve_endpoint(None, c.endpoint)
+            store = ResponseStore(label='connection')
             with httpx.Client(timeout=httpx.Timeout(45, connect=12), follow_redirects=False) as http:
                 engine.request_vision_preflight(http, endpoint=url, api_key=c.api_key,
-                                                auth_mode=c.auth_mode, model=c.model)
+                                                auth_mode=c.auth_mode, model=c.model,
+                                                on_response=lambda e: record_response(
+                                                    store, e, c.api_key, self.response_record.emit))
             self.result.emit(True, '连接成功，模型可以读取图片内容')
         except Exception as error:
             self.result.emit(False, safe_error(error))
@@ -69,6 +74,7 @@ class AgentThread(QThread):
     shot = Signal(bytes, int, int)  # image bytes, picture width, picture height
     state = Signal(str)
     done = Signal(str, str)  # status: success/stop/blocked/error/limit, summary
+    response_record = Signal(object)  # persisted response including raw provider body
 
     def __init__(self, config: RunConfig):
         super().__init__()
@@ -104,13 +110,19 @@ class AgentThread(QThread):
         pg.FAILSAFE = True
         pg.PAUSE = 0.18
 
+        store = ResponseStore(label='task')
+        self.log_line.emit('info', f'本次 API 响应将自动记录于 {store.path.name}')
+        def on_api_response(event):
+            record_response(store, event, c.api_key, self.response_record.emit)
+
         with httpx.Client(timeout=httpx.Timeout(c.request_timeout, connect=15),
                           follow_redirects=False, trust_env=True) as client:
             if c.vision_check:
                 self.state.emit('正在验证视觉 API')
                 self.log_line.emit('info', '正在进行视觉能力预检，确认模型真正接收图片…')
                 engine.request_vision_preflight(client, endpoint=url, api_key=c.api_key,
-                                                auth_mode=c.auth_mode, model=c.model)
+                                                auth_mode=c.auth_mode, model=c.model,
+                                                on_response=on_api_response)
                 self._check_stop()
                 self.log_line.emit('ok', '视觉能力预检通过')
             if c.start_delay:
@@ -160,7 +172,8 @@ class AgentThread(QThread):
                 self.log_line.emit('info', f'步骤 {step} / {c.max_steps} · 请求模型分析屏幕')
                 action = engine.request_action(client, endpoint=url, api_key=c.api_key,
                                                auth_mode=c.auth_mode, model=c.model,
-                                               task=c.task, frame=frame, history=history)
+                                               task=c.task, frame=frame, history=history,
+                                               step=step, on_response=on_api_response)
                 self._check_stop()  # cancel while request in flight BEFORE moving the mouse
                 kind = action['action']
                 line = format_action(action)
@@ -202,6 +215,12 @@ class AgentThread(QThread):
             self.done.emit('limit', f'已达到最大操作步数 {c.max_steps}，请检查桌面是否完成任务')
 
 
+def record_response(store: ResponseStore, event: dict, api_key: str, emit) -> None:
+    """Fail a run rather than silently dropping a required response log."""
+    record = store.append(event, api_key=api_key)
+    emit(record)
+
+
 class Stopped(Exception):
     pass
 
@@ -214,8 +233,9 @@ def format_action(action: dict) -> str:
         return '快捷键 · ' + '+'.join(str(key) for key in action.get('keys', []))
     if kind in ('click', 'double_click', 'move'):
         return f'{kind} · ({action.get("x")}, {action.get("y")})'
-    if kind == 'scroll':
-        return f'滚动 · {action.get("direction", "")} {action.get("amount", 1)}'
+    if kind in ('scroll', 'scroll_up', 'scroll_down'):
+        direction = kind.removeprefix('scroll_') if kind != 'scroll' else action.get('direction', '')
+        return f'鼠标{"上" if direction == "up" else "下"}滚 · {action.get("amount", 3)} 格 · ({action.get("x")}, {action.get("y")})'
     if kind == 'drag':
         return f'拖动 · ({action.get("x")}, {action.get("y")}) → ({action.get("to_x")}, {action.get("to_y")})'
     if kind == 'wait':
