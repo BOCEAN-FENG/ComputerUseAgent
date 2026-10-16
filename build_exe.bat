@@ -1,19 +1,29 @@
 @echo off
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" (
-  echo 请先运行 launch_win11.bat 来安装依赖。
-  pause
-  exit /b 1
-)
-.venv\Scripts\python.exe -m pip install -U pyinstaller || goto :fail
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name "AuroraComputer" --icon "assets\app.ico" --collect-submodules keyring.backends main.py || goto :fail
+
+if not defined AURORA_VENV_DIR set "AURORA_VENV_DIR=%LOCALAPPDATA%\AuroraStudio\venv"
+set "AURORA_PY=%AURORA_VENV_DIR%\Scripts\python.exe"
+if not exist "%AURORA_PY%" goto missing
+"%AURORA_PY%" -c "from PySide6.QtWidgets import QApplication; import httpx, PIL, pyautogui, pyperclip, keyring" >nul 2>&1
+if errorlevel 1 goto missing
+
+echo [Aurora] Installing PyInstaller...
+"%AURORA_PY%" -m pip install -U pyinstaller || goto fail
+"%AURORA_PY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name "AuroraComputer" --icon "assets\app.ico" --collect-submodules keyring.backends main.py || goto fail
+
 echo.
-echo 构建成功：dist\AuroraComputer.exe
-echo.
+echo Build complete: dist\AuroraComputer.exe
 pause
 exit /b 0
+
+:missing
+echo [Aurora] Please launch launch_win11.bat first to install dependencies.
+pause
+exit /b 1
+
 :fail
-echo 构建失败。
+echo [Aurora] Build failed.
 pause
 exit /b 1
