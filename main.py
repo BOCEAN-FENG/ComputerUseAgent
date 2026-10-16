@@ -7,21 +7,23 @@ API protocol: OpenAI-compatible multimodal Chat Completions (image_url/data URLs
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QTimer, QAbstractNativeEventFilter
-from PySide6.QtGui import QFont, QIcon, QPixmap, QTextCursor, QCloseEvent
+from PySide6.QtCore import Qt, QSettings, QTimer, QAbstractNativeEventFilter, QUrl
+from PySide6.QtGui import QFont, QIcon, QPixmap, QTextCursor, QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-    QSystemTrayIcon, QVBoxLayout, QWidget,
+    QSystemTrayIcon, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QTabWidget,
 )
 
 import engine
+from response_store import list_sessions, read_records, response_directory
 from worker import AgentThread, RunConfig, VisionTestThread
 
 APP_DIR = Path(__file__).resolve().parent
@@ -78,6 +80,13 @@ QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled { color: #70819A
 QLineEdit { min-height: 23px; }
 QLineEdit::placeholder, QPlainTextEdit::placeholder { color: #63738A; }
 QPlainTextEdit#task { font-size: 13px; line-height: 1.5; padding: 13px; }
+QTabWidget::pane { border: 1px solid #29394F; border-radius: 12px; background: #101A2C; top: -1px; }
+QTabBar::tab { background: #121D30; color: #8999B3; border: 1px solid #29394F; border-bottom: 0; padding: 10px 18px; margin-right: 5px; border-top-left-radius: 9px; border-top-right-radius: 9px; }
+QTabBar::tab:selected { background: #242345; color: #D7CCFF; border-color: #60578C; }
+QListWidget { color: #C7D4EC; background: #0B1526; border: 1px solid #34435C; border-radius: 9px; padding: 5px; }
+QListWidget::item { padding: 6px 8px; border-radius: 6px; }
+QListWidget::item:selected { background: #302F56; color: #EEE9FF; }
+QPlainTextEdit#responseDetail { background: #081321; border: 1px solid #283951; border-radius: 9px; font-family: 'Cascadia Code','Consolas',monospace; color: #C3D8EF; font-size: 11px; padding: 10px; }
 QPlainTextEdit#console { background: #0A1322; border: 0px; border-radius: 10px; font-family: 'Cascadia Code','Consolas',monospace; color: #B7D1E0; font-size: 11px; padding: 10px; }
 QComboBox::drop-down { width: 28px; border: 0px; }
 QComboBox QAbstractItemView { color: #EAF0FF; background: #111D2F; selection-background-color: #493F83; }
@@ -168,6 +177,8 @@ class Studio(QMainWindow):
         self.busy = False
         self.step_count = 0
         self.log_plain = []
+        self.response_records = []
+        self.response_session = None
         self._make_ui()
         self._make_tray()
         self._load_preferences()
@@ -211,7 +222,7 @@ class Studio(QMainWindow):
         right = QVBoxLayout()
         right.setSpacing(18)
         right.addWidget(self._make_preview())
-        right.addWidget(self._make_trace())
+        right.addWidget(self._make_diagnostics(), 1)
         right.addStretch()
         columns.addLayout(left, 11)
         columns.addLayout(right, 10)
@@ -262,6 +273,11 @@ class Studio(QMainWindow):
         sample.setObjectName('nav')
         sample.clicked.connect(self._copy_logs)
         v.addWidget(sample)
+        v.addSpacing(6)
+        inspect = QPushButton('  ▤    API 响应记录')
+        inspect.setObjectName('nav')
+        inspect.clicked.connect(lambda: (self._restore(), self.diagnostics.setCurrentIndex(1)))
+        v.addWidget(inspect)
         v.addStretch()
         v.addWidget(label('SYSTEM / LOCAL HOST', 'sidecaption'))
         v.addSpacing(11)
@@ -274,7 +290,7 @@ class Studio(QMainWindow):
         cv.addWidget(label('鼠标移至屏幕左上角紧急停止。也可使用系统托盘菜单停止。', 'tiny', True))
         v.addWidget(sys_card)
         v.addSpacing(15)
-        v.addWidget(label('AURORA  ·  v1.0  /  WINDOWS 11', 'sidecaption'))
+        v.addWidget(label('AURORA  ·  v1.1  /  WINDOWS 11', 'sidecaption'))
         return side
 
     def _make_header(self):
@@ -410,6 +426,7 @@ class Studio(QMainWindow):
         self.vision_check = QCheckBox('任务启动时先验证模型能看懂图片')
         self.vision_check.setChecked(True)
         v.addWidget(self.vision_check)
+        v.addWidget(label('支持鼠标向上 / 向下滚动；模型可自动选择滚动方向。', 'tiny', True))
         v.addWidget(label('点击窗口底部的「启动自动任务」即可开始，无需逐步审批。', 'tiny', True))
         return panel_layout('创建自动化任务', '02  /  TASK COMPOSER', v)
 
@@ -461,6 +478,153 @@ class Studio(QMainWindow):
         foot.addWidget(label('JPEG  ·  VISION INPUT', 'sidecaption'))
         v.addLayout(foot)
         return panel_layout('实时屏幕观察', '03  /  LIVE OBSERVATION', v)
+
+    def _make_diagnostics(self):
+        self.diagnostics = QTabWidget()
+        self.diagnostics.setDocumentMode(True)
+        self.diagnostics.addTab(self._make_trace(), '◷  执行日志')
+        self.diagnostics.addTab(self._make_api_responses(), '▤  API 响应')
+        return self.diagnostics
+
+    def _make_api_responses(self):
+        v = QVBoxLayout()
+        v.setSpacing(9)
+        v.addWidget(label('模型每次返回的 HTTP 正文都会保存；解析失败也可查看原文。', 'tiny', True))
+
+        session_row = QHBoxLayout()
+        session_row.addWidget(label('历史会话', 'fieldlabel'))
+        self.response_sessions = QComboBox()
+        self.response_sessions.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.response_sessions.currentIndexChanged.connect(self._on_response_session_changed)
+        session_row.addWidget(self.response_sessions, 1)
+        folder = QPushButton('打开目录')
+        folder.setObjectName('chip')
+        folder.clicked.connect(self._open_response_folder)
+        session_row.addWidget(folder)
+        v.addLayout(session_row)
+
+        self.response_items = QListWidget()
+        self.response_items.setMinimumHeight(95)
+        self.response_items.setMaximumHeight(125)
+        self.response_items.currentItemChanged.connect(self._render_response)
+        v.addWidget(self.response_items)
+
+        actions = QHBoxLayout()
+        self.response_summary = label('暂无响应记录', 'tiny', True)
+        actions.addWidget(self.response_summary, 1)
+        self.response_mode = QComboBox()
+        self.response_mode.addItem('模型输出', 'content')
+        self.response_mode.addItem('原始 API 响应', 'raw')
+        self.response_mode.addItem('解析信息', 'meta')
+        self.response_mode.currentIndexChanged.connect(self._render_response)
+        self.response_mode.setMinimumWidth(130)
+        actions.addWidget(self.response_mode)
+        copy = QPushButton('复制响应')
+        copy.setObjectName('chip')
+        copy.clicked.connect(self._copy_response)
+        actions.addWidget(copy)
+        v.addLayout(actions)
+
+        self.response_detail = QPlainTextEdit()
+        self.response_detail.setObjectName('responseDetail')
+        self.response_detail.setReadOnly(True)
+        self.response_detail.setPlaceholderText('任务开始后，这里会显示每次请求返回的模型原文…')
+        self.response_detail.setMinimumHeight(180)
+        v.addWidget(self.response_detail)
+        v.addWidget(label('本地自动保存为 JSONL；响应可能包含隐私信息，请勿公开分享。API Key 会尝试按原文遮蔽。', 'tiny', True))
+        panel = panel_layout('API 响应查看器', '05  /  RAW RESPONSE INSPECTOR', v)
+        self._refresh_response_sessions()
+        return panel
+
+    def _refresh_response_sessions(self, select_path=None):
+        current = str(select_path) if select_path else self.response_sessions.currentData()
+        self.response_sessions.blockSignals(True)
+        self.response_sessions.clear()
+        sessions = list_sessions()
+        for path in sessions[:150]:
+            self.response_sessions.addItem(path.stem.removeprefix('api-'), str(path))
+        self.response_sessions.blockSignals(False)
+        if not sessions:
+            self.response_records = []
+            self.response_items.clear()
+            self.response_detail.clear()
+            self.response_summary.setText('暂无响应记录')
+            return
+        idx = self.response_sessions.findData(current) if current else -1
+        self.response_sessions.setCurrentIndex(max(idx, 0))
+        self._on_response_session_changed()
+
+    def _on_response_session_changed(self, *args):
+        raw_path = self.response_sessions.currentData()
+        self.response_items.clear()
+        self.response_detail.clear()
+        self.response_records = []
+        if not raw_path:
+            return
+        try:
+            self.response_records = read_records(Path(raw_path))
+        except (OSError, ValueError) as exc:
+            self.response_summary.setText('读取失败：' + str(exc)[:90])
+            return
+        for index, record in enumerate(self.response_records):
+            stamp = str(record.get('time', ''))[11:19]
+            phase = '识图测试' if record.get('phase') == 'vision-check' else f'步骤 {record.get("step") or "?"}'
+            status = '✓' if record.get('parse_status') == 'ok' else '!'
+            item = QListWidgetItem(f'{status}  {stamp}  ·  {phase}  ·  HTTP {record.get("http_status", "?")}')
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            self.response_items.addItem(item)
+        self.response_summary.setText(f'共 {len(self.response_records)} 条 API 响应')
+        if self.response_records:
+            self.response_items.setCurrentRow(len(self.response_records) - 1)
+
+    def _render_response(self, *args):
+        item = self.response_items.currentItem()
+        if item is None:
+            self.response_detail.clear()
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or index >= len(self.response_records):
+            return
+        record = self.response_records[index]
+        mode = self.response_mode.currentData()
+        if mode == 'content':
+            text = record.get('model_content') or '(该响应中没有提取到文本 content；请切换至「原始 API 响应」)'
+        elif mode == 'raw':
+            raw = record.get('raw_body') or ''
+            try:
+                text = json.dumps(json.loads(raw), ensure_ascii=False, indent=2)
+            except (ValueError, TypeError):
+                text = raw or '(空响应)'
+        else:
+            text = json.dumps({key: value for key, value in record.items()
+                               if key not in ('raw_body', 'model_content', 'session_path')},
+                              ensure_ascii=False, indent=2)
+        if record.get('response_truncated') and mode == 'raw':
+            text += '\n\n[警告：响应超过单条 200 万字符存储上限，已截断]'
+        self.response_detail.setPlainText(str(text))
+        self.response_detail.moveCursor(QTextCursor.MoveOperation.Start)
+        if record.get('parse_status') != 'ok':
+            self.response_summary.setText('⚠  解析失败：' + str(record.get('parse_error') or '未知原因')[:85])
+        else:
+            self.response_summary.setText(f'✓  已记录 {len(self.response_records)} 条')
+
+    def _on_api_response(self, record):
+        # The agent thread writes the journal before emitting this signal.
+        path = record.get('session_path')
+        if path:
+            self._refresh_response_sessions(select_path=path)
+        if record.get('parse_status') != 'ok':
+            self._append_log('warn', 'API 原文已保存，可在「API 响应」中检查失败步骤')
+
+    def _copy_response(self):
+        if self.response_detail.toPlainText().strip():
+            QApplication.clipboard().setText(self.response_detail.toPlainText())
+            self._append_log('ok', '所选 API 响应已复制到剪贴板')
+
+    def _open_response_folder(self):
+        folder = response_directory()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _make_trace(self):
         v = QVBoxLayout()
@@ -525,7 +689,10 @@ class Studio(QMainWindow):
             '5. 任务结束后自动恢复主窗口，查看日志与截图。\n\n'
             '停止方式：托盘菜单 → 停止任务；或把鼠标移到主屏幕左上角。\n'
             '如果系统注册成功，也可按 Ctrl+Shift+F12。\n\n'
-            '安全提示：第三方 API 会收到屏幕截图；仅在测试环境使用。'
+            '模型返回的原始内容保存在「API 响应」标签，并会写入本地 JSONL。\n'
+            '当模型输出非 JSON 时，选择报错步骤查看完整返回。\n'
+            '允许模型自动向上或向下滚动页面。\n\n'
+            '安全提示：第三方 API 会收到屏幕截图，响应可能含隐私信息；仅在测试环境使用。'
         )
 
     def _toggle_secret(self):
@@ -615,6 +782,7 @@ class Studio(QMainWindow):
         self._append_log('info', f'正在验证连接 · 模型 {config.model}')
         self.test_thread = VisionTestThread(config)
         self.test_thread.result.connect(self._on_test_result)
+        self.test_thread.response_record.connect(self._on_api_response)
         self.test_thread.finished.connect(self._test_finished)
         self.test_thread.start()
 
@@ -650,6 +818,7 @@ class Studio(QMainWindow):
         self._set_status('running', '准备启动')
         self.agent = AgentThread(config)
         self.agent.log_line.connect(self._append_log)
+        self.agent.response_record.connect(self._on_api_response)
         self.agent.activity.connect(self._on_activity)
         self.agent.shot.connect(self._on_shot)
         self.agent.state.connect(lambda title: self._set_status('running', title))
@@ -696,6 +865,8 @@ class Studio(QMainWindow):
                   'error': ('运行异常', 'warn')}
         human, level = labels.get(status, (status, 'info'))
         self._append_log(level, f'{human} · {summary}')
+        if status == 'error':
+            self.diagnostics.setCurrentIndex(1)  # show the preserved response on failure
         self._set_status('idle', human)
         self.busy = False
         self._set_inputs_enabled(True)

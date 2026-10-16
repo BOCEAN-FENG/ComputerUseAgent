@@ -30,7 +30,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -44,6 +44,8 @@ Valid actions (all screenshot coordinates refer to the attached image, NOT the o
 {"action":"double_click","x":100,"y":200}
 {"action":"move","x":100,"y":200}
 {"action":"drag","x":100,"y":200,"to_x":300,"to_y":350}
+{"action":"scroll_up","x":300,"y":350,"amount":3}
+{"action":"scroll_down","x":300,"y":350,"amount":3}
 {"action":"scroll","x":300,"y":350,"direction":"down","amount":3}
 {"action":"type","text":"Hello 世界"}
 {"action":"keypress","keys":["ctrl","l"]}
@@ -55,6 +57,8 @@ Rules:
 - Your job is to make progress on the USER'S GOAL, not to explore by clicking arbitrarily.
 - After opening a text editor for a task involving entering text: if needed click the main editing area ONCE,
   then immediately use the `type` action with the requested content. Do not keep clicking inside the editor.
+- If the target content is outside the visible screen, use scroll_down or scroll_up (1 to 5 steps)
+  at the scrollable area, then inspect a fresh screenshot; never randomly click to find content.
 - Do not click several times to look for a response. If an application has just launched, use `wait` once
   to allow it to load, and then observe it. Never invent target coordinates.
 - You will be told when a previous click caused no meaningful screenshot change. Treat it as evidence
@@ -190,12 +194,9 @@ def request_vision_preflight(
     api_key: str,
     auth_mode: str,
     model: str,
+    on_response: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
-    """Test if a proxy/model actually receives image contents, not only text.
-
-    The test code appears ONLY inside an image. It is not included in the text
-    prompt, and does not rely on interpreting an actual desktop screenshot.
-    """
+    """Verify that the provider reads image pixels; journal even invalid responses."""
     secret = "".join(secrets.choice("23456789") for _ in range(4))
     image = Image.new("RGB", (680, 220), "white")
     draw = ImageDraw.Draw(image)
@@ -218,23 +219,31 @@ def request_vision_preflight(
             ]},
         ],
     }
+    response = None
+    content = ''
+    parse_status = 'error'
+    error = ''
     try:
         response = http_client.post(endpoint, headers=build_headers(api_key, auth_mode), json=payload)
         response.raise_for_status()
         body = response.json()
-        result = decode_message_content(body).strip()
+        content = decode_message_content(body).strip()
+        if not re.fullmatch(r"\D*" + re.escape(secret) + r"\D*", content):
+            raise ValueError("模型没有正确识别测试图片中的四位数字")
+        parse_status = 'ok'
     except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        error = f'{type(exc).__name__}: {str(exc)[:200]}'
         raise RuntimeError(
-            "视觉能力预检失败：第三方接口无法正确处理图片输入。请检查模型是否支持视觉、"
-            "API 是否透传 image_url / base64 图片。如果确认兼容可手动使用 --skip-vision-check。"
+            "视觉能力预检失败：第三方接口没有正确识别图片，或响应结构不兼容。"
+            "请在「API 响应」面板查看原始内容。"
         ) from exc
-    if not re.fullmatch(r"\D*" + re.escape(secret) + r"\D*", result):
-        raise RuntimeError(
-            "视觉能力预检失败：模型没有正确读取图片中的四位数字。"
-            "可能是纯文本模型、第三方网关忽略了图片、或模型视觉能力不足。"
-            "请换支持视觉的模型（仍可用 --skip-vision-check 跳过测试，但不推荐）。"
-        )
-    return None  # confirmed: remote endpoint can read image pixels
+    finally:
+        if response is not None and on_response is not None:
+            on_response({
+                'phase': 'vision-check', 'step': None, 'model': model,
+                'http_status': response.status_code, 'raw_body': response.text,
+                'model_content': content, 'parse_status': parse_status, 'parse_error': error,
+            })
 
 
 def decode_message_content(body: dict[str, Any]) -> str:
@@ -282,6 +291,8 @@ def request_action(
     task: str,
     frame: Screenshot,
     history: list[str],
+    step: int | None = None,
+    on_response: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     history_text = "\n".join(history[-12:]) if history else "(none)"
     screenshot_context = (
@@ -296,31 +307,46 @@ def request_action(
         "stream": False,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": screenshot_context},
-                    {"type": "image_url", "image_url": {"url": frame.data_url}},
-                ],
-            },
+            {"role": "user", "content": [
+                {"type": "text", "text": screenshot_context},
+                {"type": "image_url", "image_url": {"url": frame.data_url}},
+            ]},
         ],
     }
+    response = None
+    content = ''
+    parse_status = 'error'
+    parse_error = ''
     try:
         response = http_client.post(endpoint, headers=build_headers(api_key, auth_mode), json=payload)
         response.raise_for_status()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise RuntimeError("接口返回内容不是 JSON；请查看 API 响应面板。") from exc
+        if not isinstance(body, dict):
+            raise RuntimeError("接口返回了不受支持的 JSON 结构。")
+        content = decode_message_content(body)
+        action = parse_action(content)
+        parse_status = 'ok'
+        return action
     except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        # Keep this concise: providers can echo request content in error responses.
-        raise RuntimeError(f"接口 HTTP {status}；检查 endpoint、model、Key 和模型视觉输入支持情况。") from exc
+        parse_error = f'HTTP {exc.response.status_code}'
+        raise RuntimeError(f"接口 HTTP {exc.response.status_code}，原始响应已记录到 API 响应面板。") from exc
     except httpx.RequestError as exc:
-        raise RuntimeError(f"接口连接失败：{type(exc).__name__}: {exc}") from exc
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise RuntimeError("接口返回内容不是 JSON；检查是否为 Chat Completions 端点。") from exc
-    if not isinstance(body, dict):
-        raise RuntimeError("接口返回了不受支持的 JSON 结构。")
-    return parse_action(decode_message_content(body))
+        # No HTTP response exists when connection or timeout fails.
+        raise RuntimeError(f"接口连接失败：{type(exc).__name__}（检查网络、地址和代理）") from exc
+    except (ValueError, RuntimeError) as exc:
+        parse_error = str(exc)[:200]
+        raise
+    finally:
+        if response is not None and on_response is not None:
+            on_response({
+                'phase': 'action', 'step': step, 'model': model,
+                'http_status': response.status_code, 'raw_body': response.text,
+                'model_content': content, 'parse_status': parse_status,
+                'parse_error': parse_error,
+            })
 
 
 def require_number(action: dict[str, Any], field: str) -> float:
@@ -344,7 +370,7 @@ def image_to_screen(action: dict[str, Any], frame: Screenshot, x_field: str = "x
 
 def execute_action(pg: Any, action: dict[str, Any], frame: Screenshot) -> str:
     kind = action["action"]
-    if kind in {"click", "double_click", "move", "drag", "scroll"}:
+    if kind in {"click", "double_click", "move", "drag", "scroll", "scroll_up", "scroll_down"}:
         x, y = image_to_screen(action, frame)
     if kind == "click":
         button = action.get("button", "left")
@@ -363,8 +389,8 @@ def execute_action(pg: Any, action: dict[str, Any], frame: Screenshot) -> str:
         pg.moveTo(x, y, duration=0.1)
         pg.dragTo(to_x, to_y, duration=0.5, button="left")
         return f"drag ({x}, {y}) -> ({to_x}, {to_y})"
-    if kind == "scroll":
-        direction = action.get("direction")
+    if kind in {"scroll", "scroll_up", "scroll_down"}:
+        direction = kind.removeprefix("scroll_") if kind != "scroll" else action.get("direction")
         amount = action.get("amount", 3)
         if direction not in {"up", "down"} or type(amount) is not int or not (1 <= amount <= 10):
             raise ValueError("scroll 需要 direction=up/down 和 amount=1..10。")
