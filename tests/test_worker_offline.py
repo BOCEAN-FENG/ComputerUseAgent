@@ -79,17 +79,41 @@ class WorkerOfflineTests(unittest.TestCase):
         self.assertEqual(pg.calls, [])
         self.assertEqual(agent.done.emissions[-1][0], 'stop')
 
-    def test_click_loop_stops_without_30_blind_clicks(self):
+    def test_many_consecutive_clicks_on_different_targets_are_allowed(self):
         pg = FakePg()
         agent = worker.AgentThread(self.config())
-        positions = iter([100, 200, 300, 400, 500, 600])
+        agent._sleep = lambda _: False
+        positions = iter([100 + i * 55 for i in range(10)])
         def req(*a, **k):
-            return {'action': 'click', 'x': next(positions), 'y': 150}
+            try:
+                return {'action': 'click', 'x': next(positions), 'y': 150}
+            except StopIteration:
+                return {'action': 'done', 'message': '已完成'}
         patches = self.mock_resources(pg)
         with patches[0], patches[1], patches[2], patch.object(engine, 'request_action', side_effect=req):
             agent.run()
-        self.assertLessEqual(len(pg.calls), 3)
+        self.assertEqual(len(pg.calls), 10)
+        self.assertEqual(agent.done.emissions[-1][0], 'success')
+
+    def test_many_unchanged_repeated_clicks_on_same_target_are_blocked(self):
+        pg = FakePg()
+        agent = worker.AgentThread(self.config())
+        agent._sleep = lambda _: False
+        def req(*a, **k):
+            return {'action': 'click', 'x': 100, 'y': 150}
+        patches = self.mock_resources(pg)
+        with patches[0], patches[1], patches[2], patch.object(engine, 'request_action', side_effect=req):
+            agent.run()
+        self.assertEqual(len(pg.calls), 8)  # 第九次同位置无变化点击被阻止
         self.assertEqual(agent.done.emissions[-1][0], 'blocked')
+
+    def test_click_guard_is_reset_by_screen_change(self):
+        guard = worker.ClickStagnationGuard(max_stagnant_same_spot=8)
+        for _ in range(7):
+            self.assertLessEqual(guard.observe('click', (300, 300), 0.0), 7)
+        self.assertFalse(guard.should_block('click', (301, 301)))
+        guard.observe('click', (300, 300), 0.02)
+        self.assertFalse(guard.should_block('click', (300, 300)))
 
     def test_type_content_not_present_in_log_action(self):
         action = {'action': 'type', 'text': 'sensitive text password'}

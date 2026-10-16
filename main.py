@@ -179,6 +179,7 @@ class Studio(QMainWindow):
         self.log_plain = []
         self.response_records = []
         self.response_session = None
+        self.pending_question_step: int | None = None
         self._make_ui()
         self._make_tray()
         self._load_preferences()
@@ -278,6 +279,11 @@ class Studio(QMainWindow):
         inspect.setObjectName('nav')
         inspect.clicked.connect(lambda: (self._restore(), self.diagnostics.setCurrentIndex(1)))
         v.addWidget(inspect)
+        v.addSpacing(6)
+        answer = QPushButton('  ✉    用户回复 / 继续')
+        answer.setObjectName('nav')
+        answer.clicked.connect(self._show_question_panel)
+        v.addWidget(answer)
         v.addStretch()
         v.addWidget(label('SYSTEM / LOCAL HOST', 'sidecaption'))
         v.addSpacing(11)
@@ -290,7 +296,7 @@ class Studio(QMainWindow):
         cv.addWidget(label('鼠标移至屏幕左上角紧急停止。也可使用系统托盘菜单停止。', 'tiny', True))
         v.addWidget(sys_card)
         v.addSpacing(15)
-        v.addWidget(label('AURORA  ·  v1.1  /  WINDOWS 11', 'sidecaption'))
+        v.addWidget(label('AURORA  ·  v1.7  /  WINDOWS 11', 'sidecaption'))
         return side
 
     def _make_header(self):
@@ -327,7 +333,7 @@ class Studio(QMainWindow):
         row.setSpacing(14)
         a, self.connection_metric = self._metric('API CONNECTION', '未验证', '等待连接视觉模型')
         b, self.task_metric = self._metric('AGENT STATUS', '待命中', '准备运行任务')
-        c, self.step_metric = self._metric('ACTION COUNT', '00 / 25', '自动执行 · 可随时停止')
+        c, self.step_metric = self._metric('ACTION COUNT', '00 / 100', '自动执行 · 可随时停止')
         for item in (a, b, c):
             row.addWidget(item)
         return row
@@ -393,6 +399,28 @@ class Studio(QMainWindow):
         self.task_input.setFixedHeight(114)
         self.task_input.setPlaceholderText('例如：打开记事本，输入「你好，我是 Aurora」，然后检查文本是否正确。')
         v.addWidget(self.task_input)
+        v.addWidget(label('任务运行状态 · 总体目标锁定，进度由运行线程持续更新', 'fieldlabel'))
+        status_row = QHBoxLayout()
+        status_row.setSpacing(9)
+        goal_col = QVBoxLayout()
+        goal_col.addWidget(label('🔒 总体目标（只读）', 'tiny'))
+        self.locked_goal_view = QPlainTextEdit()
+        self.locked_goal_view.setReadOnly(True)
+        self.locked_goal_view.setObjectName('responseDetail')
+        self.locked_goal_view.setPlaceholderText('启动任务时锁定用户目标；模型不能修改')
+        self.locked_goal_view.setFixedHeight(106)
+        goal_col.addWidget(self.locked_goal_view)
+        status_row.addLayout(goal_col, 1)
+        progress_col = QVBoxLayout()
+        progress_col.addWidget(label('当前已完成 / 正在进行 / 下一步（只读）', 'tiny'))
+        self.task_progress_view = QPlainTextEdit()
+        self.task_progress_view.setReadOnly(True)
+        self.task_progress_view.setObjectName('responseDetail')
+        self.task_progress_view.setPlaceholderText('任务启动后显示持续更新的执行进度')
+        self.task_progress_view.setFixedHeight(106)
+        progress_col.addWidget(self.task_progress_view)
+        status_row.addLayout(progress_col, 1)
+        v.addLayout(status_row)
         chiprow = QHBoxLayout()
         chiprow.setSpacing(7)
         for text, task in [
@@ -409,8 +437,8 @@ class Studio(QMainWindow):
         options.setSpacing(9)
         options.addWidget(label('最多步骤', 'fieldlabel'))
         self.steps = QSpinBox()
-        self.steps.setRange(1, 100)
-        self.steps.setValue(25)
+        self.steps.setRange(1, 200)
+        self.steps.setValue(100)
         self.steps.setFixedWidth(70)
         options.addWidget(self.steps)
         options.addSpacing(8)
@@ -426,7 +454,8 @@ class Studio(QMainWindow):
         self.vision_check = QCheckBox('任务启动时先验证模型能看懂图片')
         self.vision_check.setChecked(True)
         v.addWidget(self.vision_check)
-        v.addWidget(label('支持鼠标向上 / 向下滚动；模型可自动选择滚动方向。', 'tiny', True))
+        v.addWidget(label('支持鼠标按住拖动、四向滚轮、长按与组合键；截图可矩形框选。', 'tiny', True))
+        v.addWidget(label('执行中若模型返回 ask_user，会自动显示确认问题；回复后从原步骤继续。', 'tiny', True))
         v.addWidget(label('点击窗口底部的「启动自动任务」即可开始，无需逐步审批。', 'tiny', True))
         return panel_layout('创建自动化任务', '02  /  TASK COMPOSER', v)
 
@@ -484,7 +513,46 @@ class Studio(QMainWindow):
         self.diagnostics.setDocumentMode(True)
         self.diagnostics.addTab(self._make_trace(), '◷  执行日志')
         self.diagnostics.addTab(self._make_api_responses(), '▤  API 响应')
+        self.diagnostics.addTab(self._make_question_panel(), '✉  用户回复')
         return self.diagnostics
+
+    def _make_question_panel(self):
+        v = QVBoxLayout()
+        v.setSpacing(10)
+        v.addWidget(label('模型提出问题时，整个任务会暂停。你可以在这里回复，不必重新启动任务。', 'tiny', True))
+        self.question_status = label('当前没有需要回复的问题', 'good', True)
+        v.addWidget(self.question_status)
+        v.addWidget(label('Agent 的问题', 'fieldlabel'))
+        self.question_view = QPlainTextEdit()
+        self.question_view.setObjectName('responseDetail')
+        self.question_view.setReadOnly(True)
+        self.question_view.setPlaceholderText('需要确认时，模型的问题将完整显示在这里…')
+        self.question_view.setMinimumHeight(115)
+        self.question_view.setMaximumHeight(230)
+        v.addWidget(self.question_view)
+        v.addWidget(label('你的回复', 'fieldlabel'))
+        self.reply_editor = QPlainTextEdit()
+        self.reply_editor.setObjectName('task')
+        self.reply_editor.setPlaceholderText('例如：选择第 2 项，请返回首页，找出列表里的第三个视频，然后继续原来的任务。')
+        self.reply_editor.setMinimumHeight(85)
+        self.reply_editor.setMaximumHeight(125)
+        self.reply_editor.setEnabled(False)
+        v.addWidget(self.reply_editor)
+        actions = QHBoxLayout()
+        self.send_reply_btn = QPushButton('↗  发送回复并继续任务')
+        self.send_reply_btn.setObjectName('primary')
+        self.send_reply_btn.setEnabled(False)
+        self.send_reply_btn.clicked.connect(self._submit_user_reply)
+        actions.addWidget(self.send_reply_btn, 1)
+        self.stop_question_btn = QPushButton('■  停止任务')
+        self.stop_question_btn.setObjectName('stop')
+        self.stop_question_btn.setEnabled(False)
+        self.stop_question_btn.clicked.connect(self.stop_task)
+        actions.addWidget(self.stop_question_btn)
+        v.addLayout(actions)
+        self.reply_tip = label('提交后 Aurora 会自动最小化，然后继续观察之前的桌面。', 'tiny', True)
+        v.addWidget(self.reply_tip)
+        return panel_layout('人工确认 · 继续对话', '06  /  HUMAN-IN-THE-LOOP', v)
 
     def _make_api_responses(self):
         v = QVBoxLayout()
@@ -570,7 +638,8 @@ class Studio(QMainWindow):
             stamp = str(record.get('time', ''))[11:19]
             phase = '识图测试' if record.get('phase') == 'vision-check' else f'步骤 {record.get("step") or "?"}'
             status = '✓' if record.get('parse_status') == 'ok' else '!'
-            item = QListWidgetItem(f'{status}  {stamp}  ·  {phase}  ·  HTTP {record.get("http_status", "?")}')
+            compat = ' · DSML 已兼容' if record.get('parse_mode') == 'dsml_compat' else ''
+            item = QListWidgetItem(f'{status}  {stamp}  ·  {phase}  ·  HTTP {record.get("http_status", "?")}{compat}')
             item.setData(Qt.ItemDataRole.UserRole, index)
             self.response_items.addItem(item)
         self.response_summary.setText(f'共 {len(self.response_records)} 条 API 响应')
@@ -605,6 +674,8 @@ class Studio(QMainWindow):
         self.response_detail.moveCursor(QTextCursor.MoveOperation.Start)
         if record.get('parse_status') != 'ok':
             self.response_summary.setText('⚠  解析失败：' + str(record.get('parse_error') or '未知原因')[:85])
+        elif record.get('parse_mode') == 'dsml_compat':
+            self.response_summary.setText('✓  模型返回 DSML，已安全转换为单个动作；建议检查模型输出协议')
         else:
             self.response_summary.setText(f'✓  已记录 {len(self.response_records)} 条')
 
@@ -657,6 +728,9 @@ class Studio(QMainWindow):
         menu = QMenu()
         open_action = menu.addAction('打开 Aurora')
         open_action.triggered.connect(self._restore)
+        self.tray_question = menu.addAction('✉  查看待回复的问题')
+        self.tray_question.setEnabled(False)
+        self.tray_question.triggered.connect(self._show_question_panel)
         self.tray_stop = menu.addAction('■  停止当前任务')
         self.tray_stop.setEnabled(False)
         self.tray_stop.triggered.connect(self.stop_task)
@@ -680,6 +754,68 @@ class Studio(QMainWindow):
     def _go_top(self):
         self._restore()
 
+    def _show_question_panel(self):
+        self._restore()
+        self.diagnostics.setCurrentIndex(2)
+        if self.pending_question_step is not None:
+            self.reply_editor.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _on_user_question(self, step: int, question: str):
+        if not self.busy or self.agent is None:
+            return
+        self.pending_question_step = step
+        self.question_view.setPlainText(question)
+        self.question_view.moveCursor(QTextCursor.MoveOperation.Start)
+        self.reply_editor.clear()
+        self.reply_editor.setEnabled(True)
+        self.send_reply_btn.setEnabled(True)
+        self.stop_question_btn.setEnabled(True)
+        self.tray_question.setEnabled(True)
+        self.question_status.setText(f'◉  已暂停 · 第 {step} 步正在等待你的回复')
+        self.reply_tip.setText('输入你希望 Agent 如何继续。回复会连同任务上下文发给模型。')
+        self._set_status('waiting', '等待你的回复')
+        self._show_question_panel()
+        if self.tray.isVisible():
+            self.tray.showMessage('Aurora 需要你的确认', 'Agent 已暂停，请在“用户回复”标签中回答。',
+                                  QSystemTrayIcon.MessageIcon.Information, 5000)
+
+    def _submit_user_reply(self):
+        step = self.pending_question_step
+        agent = self.agent
+        if step is None or agent is None or not self.busy:
+            return
+        answer = self.reply_editor.toPlainText().strip()
+        if not answer:
+            self.reply_tip.setText('请先填写回复内容。')
+            self.reply_editor.setFocus(Qt.FocusReason.OtherFocusReason)
+            return
+        if len(answer) > 4000:
+            self.reply_tip.setText('回复最多 4000 字符，请精简后发送。')
+            return
+        # Minimize before unblocking the worker. It also waits >=1.8s before
+        # taking the next screenshot to prevent the Aurora UI occluding the desktop.
+        self.showMinimized()
+        if not agent.submit_reply(step, answer):
+            self._restore()
+            self.reply_tip.setText('发送失败：该问题已失效，或者任务已停止。')
+            return
+        self.pending_question_step = None
+        self.reply_editor.setEnabled(False)
+        self.send_reply_btn.setEnabled(False)
+        self.stop_question_btn.setEnabled(False)
+        self.tray_question.setEnabled(False)
+        self.question_status.setText('✓  已回复，正在继续原来的任务')
+        self.reply_tip.setText('已发送。应用已最小化；后续若需要确认会再次弹出。')
+        self._append_log('ok', f'第 {step} 步已提交人工回复 · {len(answer)} 字符（正文不写入日志）')
+        self._set_status('running', '恢复自动执行')
+
+    def _clear_pending_question(self):
+        self.pending_question_step = None
+        self.reply_editor.setEnabled(False)
+        self.send_reply_btn.setEnabled(False)
+        self.stop_question_btn.setEnabled(False)
+        self.tray_question.setEnabled(False)
+
     def _show_guide(self):
         QMessageBox.information(self, 'Aurora 使用指南',
             '1. 输入 OpenAI 兼容的视觉模型 API 地址、模型 ID 与密钥。\n'
@@ -691,7 +827,9 @@ class Studio(QMainWindow):
             '如果系统注册成功，也可按 Ctrl+Shift+F12。\n\n'
             '模型返回的原始内容保存在「API 响应」标签，并会写入本地 JSONL。\n'
             '当模型输出非 JSON 时，选择报错步骤查看完整返回。\n'
-            '允许模型自动向上或向下滚动页面。\n\n'
+            '允许模型自动向上或向下滚动页面。\n'
+            '模型返回 ask_user 时会暂停操作并自动打开“用户回复”标签。\n'
+            '填写回复点击“发送回复并继续任务”，无需重新启动。\n\n'
             '安全提示：第三方 API 会收到屏幕截图，响应可能含隐私信息；仅在测试环境使用。'
         )
 
@@ -707,7 +845,7 @@ class Studio(QMainWindow):
         self.model.setText(str(s.value('model', os.getenv('COMPUTER_MODEL', ''))))
         auth = str(s.value('auth', os.getenv('COMPUTER_AUTH_MODE', 'bearer')))
         self.auth.setCurrentIndex(max(0, self.auth.findData(auth)))
-        self.steps.setValue(int(s.value('steps', 25)))
+        self.steps.setValue(int(s.value('steps', 100)))
         self.delay.setValue(int(s.value('delay', 3)))
         saved = str(s.value('rememberKey', 'false')).lower() == 'true'
         self.remember.setChecked(saved)
@@ -809,7 +947,13 @@ class Studio(QMainWindow):
             return
         self._save_preferences()
         self.step_count = 0
+        self._clear_pending_question()
+        self.question_view.clear()
+        self.reply_editor.clear()
+        self.question_status.setText('运行中 · 暂无待回复问题')
         self.step_metric.setText(f'00 / {config.max_steps:02d}')
+        self.locked_goal_view.setPlainText(config.task)
+        self.task_progress_view.setPlainText('已完成：暂无\n正在进行：观察桌面\n下一步：根据用户目标选择动作')
         self._append_log('info', '────────────────────────────────────')
         self._append_log('ok', f'启动任务 · {config.model}')
         self._append_log('info', '执行窗口即将最小化；请勿在任务期间手动干扰鼠标键盘')
@@ -820,19 +964,47 @@ class Studio(QMainWindow):
         self.agent.log_line.connect(self._append_log)
         self.agent.response_record.connect(self._on_api_response)
         self.agent.activity.connect(self._on_activity)
+        self.agent.progress.connect(self._on_video_progress)
+        self.agent.task_snapshot.connect(self._on_task_snapshot)
         self.agent.shot.connect(self._on_shot)
-        self.agent.state.connect(lambda title: self._set_status('running', title))
+        self.agent.user_question.connect(self._on_user_question)
+        self.agent.state.connect(lambda title: self._set_status(
+            'waiting' if title == '等待你的回复' else 'running', title))
         self.agent.done.connect(self._on_task_done)
         self.agent.finished.connect(self._agent_finished)
         self.agent.start()
         # Hide our own GUI so that screenshots won't show/control the Aurora window.
-        QTimer.singleShot(350, lambda: self.showMinimized() if self.busy else None)
+        QTimer.singleShot(350, lambda: self.showMinimized()
+                          if self.busy and self.pending_question_step is None else None)
 
     def stop_task(self):
         if self.agent and self.agent.isRunning():
             self.agent.request_stop()
+            if self.pending_question_step is not None:
+                self.question_status.setText('已中止 · 等待回复已取消')
+                self._clear_pending_question()
             self._set_status('running', '正在停止…')
             self._append_log('warn', '停止请求已发送；当前 API 请求完成/超时后，不会执行其返回动作')
+
+    def _on_video_progress(self, progress: str):
+        self.task_metric.setText(progress.split(' · ', 1)[0])
+        self._append_log('info', f'视频任务进度 · {progress}')
+
+    def _on_task_snapshot(self, info: dict):
+        if not isinstance(info, dict):
+            return
+        # Always display what the worker locked at task start, not a model-made goal.
+        self.locked_goal_view.setPlainText(str(info.get('goal', '')))
+        completed = info.get('completed', [])
+        lines = ['已完成（模型截图观察，尚非独立验证）：']
+        lines.extend('✓ ' + str(item) for item in completed) if completed else lines.append('暂无')
+        lines += ['', '正在进行：' + str(info.get('current', '')),
+                  '下一步：' + str(info.get('next', ''))]
+        if info.get('video'):
+            lines.extend(['', '程序维护的视频进度：', str(info['video'])])
+        if info.get('remediation'):
+            lines.extend(['', str(info['remediation'])])
+        self.task_progress_view.setPlainText('\n'.join(lines))
 
     def _on_activity(self, step, detail):
         self.step_count = step
@@ -860,6 +1032,7 @@ class Studio(QMainWindow):
             QTimer.singleShot(0, self._show_preview)
 
     def _on_task_done(self, status, summary):
+        self._clear_pending_question()
         labels = {'success': ('完成', 'ok'), 'stop': ('已停止', 'warn'),
                   'blocked': ('保护性停止', 'warn'), 'limit': ('达到上限', 'warn'),
                   'error': ('运行异常', 'warn')}
@@ -881,9 +1054,10 @@ class Studio(QMainWindow):
 
     def _set_status(self, flag, name):
         self.task_metric.setText(name)
-        self.tray_stop.setEnabled(flag == 'running')
-        self.stop_btn.setEnabled(flag == 'running')
-        self.start_btn.setEnabled(flag != 'running')
+        active = flag in ('running', 'waiting')
+        self.tray_stop.setEnabled(active)
+        self.stop_btn.setEnabled(active)
+        self.start_btn.setEnabled(not active)
 
     def _set_inputs_enabled(self, on):
         for widget in (self.endpoint, self.model, self.api_key, self.auth,
