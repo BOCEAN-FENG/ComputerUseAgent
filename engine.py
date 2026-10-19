@@ -36,6 +36,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
+from text_input import type_text
 
 
 SYSTEM_PROMPT = """你是 Aurora Computer Use 的 Windows 图形界面操作助手。
@@ -66,7 +67,7 @@ SYSTEM_PROMPT = """你是 Aurora Computer Use 的 Windows 图形界面操作助�
 向右滚：{"action":"scroll_right","x":600,"y":420,"amount":3}
 兼容写法：{"action":"scroll","x":600,"y":420,"direction":"down","amount":1}
 【键盘】
-输入文字：{"action":"type","text":"你好，世界"} [经剪贴板和 Ctrl+V 模拟键盘输入]
+输入文字：{"action":"type","text":"你好，世界"} [通过键盘事件逐字输入，绝不覆盖系统剪贴板；中英文均支持]
 按键或组合键：{"action":"keypress","keys":["ctrl","l"]} [例如 ["enter"]、["win","r"]、["alt","tab"]]
 按键长按后释放：{"action":"key_hold","key":"down","seconds":0.6}
 分步按下：{"action":"key_down","key":"shift"}
@@ -85,8 +86,9 @@ SYSTEM_PROMPT = """你是 Aurora Computer Use 的 Windows 图形界面操作助�
 3. 选择需要的图片矩形：从画面左上角向右下角**按住左键拖动并松开**。必须使用一个完整 drag JSON，例如：
    {"action":"drag","x":240,"y":160,"to_x":1350,"to_y":790,"duration":1.2,"hold_seconds":0.15}
    上述坐标仅是示例，应按当前截图实际宽高选择，起点和终点必须在屏幕内，形成有面积的矩形。
-4. 矩形截图完成后覆盖层通常消失并将截图放到剪贴板；不要连续调用截图快捷键。直接按 Win+R，输入 mspaint 并回车，在画图中 Ctrl+V，再通过可见 GUI 另存为桌面 PNG。
-5. 如覆盖层仍在，先观察是否处于矩形模式；不确定时按 Esc 退出后仅重新启动一次截图，再拖动。不要无限循环 PrintScreen / Win+Shift+S。
+4. 矩形截图完成后覆盖层通常消失并将截图放到剪贴板；不要连续调用截图快捷键。通过 Win+R、type 输入 mspaint、Enter 启动画图；type 使用键盘事件，不会覆盖截图剪贴板。等待画图完整加载并从截图确认窗口处于前台，再按 Ctrl+V；若焦点不对可先单击画图画布。再通过可见 GUI 另存为桌面 PNG。
+5. 如果 Ctrl+V 后画布仍空白，先确认画图窗口已完整显示并获得焦点；可单击画图画布，再尝试一次 Ctrl+V。不要立刻重新截图或再次启动 mspaint。只有截图工具确实没有生成图片时，才重新回到浏览器执行一次截图。
+6. 如覆盖层仍在，先观察是否处于矩形模式；不确定时按 Esc 退出后仅重新启动一次截图，再拖动。不要无限循环 PrintScreen / Win+Shift+S。
 6. 截图包含哪些内容取决于选区，仅以当前截图可以确认的信息总结文本；不能把视频播放过程的内容凭空扩写。
 
 ━━━━━━━━━━ 三、只读截图标注（可选，不是动作） ━━━━━━━━━━
@@ -756,11 +758,7 @@ def execute_action(pg: Any, action: dict[str, Any], frame: Screenshot,
             pg.hscroll(amount if direction == 'right' else -amount)
         return f'scroll {direction} {amount} at ({x}, {y})'
     if kind == 'type':
-        import pyperclip
-        value = action['text']
-        pyperclip.copy(value)
-        pg.hotkey('ctrl','v')
-        return f'type {len(value)} characters (clipboard paste)'
+        return type_text(pg, action['text'])
     if kind == 'keypress':
         keys = [normalize_key(pg,key) for key in action['keys']]
         pg.hotkey(*keys)

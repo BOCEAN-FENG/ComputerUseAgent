@@ -11,7 +11,7 @@ if errorlevel 1 goto missing
 
 echo [Aurora] Installing PyInstaller...
 "%AURORA_PY%" -m pip install -U pyinstaller || goto fail
-"%AURORA_PY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name "AuroraComputer" --icon "assets\app.ico" --collect-submodules keyring.backends main.py || goto fail
+"%AURORA_PY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name "AuroraComputer" --icon "assets\app.ico" --collect-submodules keyring.backends --add-data "assets;assets" main.py || goto fail
 
 echo.
 echo Build complete: dist\AuroraComputer.exe

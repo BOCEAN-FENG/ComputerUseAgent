@@ -25,83 +25,10 @@ from PySide6.QtWidgets import (
 import engine
 from response_store import list_sessions, read_records, response_directory
 from worker import AgentThread, RunConfig, VisionTestThread
+from studio_ui import StudioUI, scrollable
 
 APP_DIR = Path(__file__).resolve().parent
 ICON = APP_DIR / 'assets' / 'app.ico'
-
-COLORS = {
-    'bg': '#090E19', 'panel': '#121C2D', 'panel2': '#172336',
-    'stroke': '#26354B', 'text': '#F1F5FF', 'muted': '#8294AD',
-    'purple': '#A28CFF', 'mint': '#51DEC4', 'danger': '#FF7888',
-}
-
-QSS = """
-QWidget { color: #EDF3FF; background: transparent; font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif; font-size: 13px; }
-QMainWindow, QWidget#root { background-color: #090E19; }
-QFrame#sidebar { background-color: #0C1422; border-right: 1px solid #202F44; }
-QFrame#dock { background-color: #101B2D; border-top: 1px solid #2A3950; }
-QFrame#panel, QFrame#metric { background-color: #111D2E; border: 1px solid #27364B; border-radius: 17px; }
-QFrame#softpanel { background-color: #162338; border: 1px solid #273A51; border-radius: 13px; }
-QFrame#previewInner { background-color: #090F1D; border: 1px dashed #314159; border-radius: 12px; }
-QFrame#softline { background-color: #24344B; max-height: 1px; min-height: 1px; }
-QLabel#brandmark { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #B29FFF,stop:1 #6650D9); color: #FFF; border-radius: 14px; font-size: 23px; font-weight: 800; }
-QLabel#brandname { font-size: 19px; color: #F4F1FF; font-weight: 800; letter-spacing: 1.6px; }
-QLabel#sidecaption { color: #68809C; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; }
-QLabel#headline { font-size: 29px; color: #F5F7FF; font-weight: 800; }
-QLabel#subtitle { font-size: 12px; color: #8294AD; }
-QLabel#kicker { color: #A28CFF; font-size: 11px; font-weight: 800; letter-spacing: 1.6px; }
-QLabel#sectitle { color: #F0F5FF; font-size: 15px; font-weight: 800; }
-QLabel#tiny { color: #91A3BD; font-size: 11px; }
-QLabel#fieldlabel { color: #C9D5E6; font-size: 12px; font-weight: 600; }
-QLabel#value { color: #F2F5FF; font-size: 20px; font-weight: 800; }
-QLabel#muted { color: #8495AE; font-size: 12px; }
-QLabel#accent { color: #B5A7FF; font-size: 12px; font-weight: 700; }
-QLabel#good { color: #54DEC5; font-size: 12px; font-weight: 700; }
-QLabel#warning { color: #FEBF74; font-size: 12px; }
-QLabel#callout { color: #A5B6CD; font-size: 11px; }
-QPushButton { border: 1px solid #2E4058; background: #1B2A40; color: #E8EFFF; border-radius: 10px; padding: 9px 14px; font-weight: 650; }
-QPushButton:hover { background: #273A55; border-color: #53688B; }
-QPushButton:pressed { background: #29395B; }
-QPushButton:disabled { color: #60718C; background-color: #142135; border-color: #223047; }
-QPushButton#primary { color: #0E1027; font-size: 14px; font-weight: 900; border: 0; border-radius: 11px; padding: 13px 16px; background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #B6A4FF,stop:1 #7C9FFB); }
-QPushButton#primary:hover { background: #C6B9FF; }
-QPushButton#stop { background-color: #3D2335; border: 1px solid #92475C; color: #FFACB8; font-size: 13px; padding: 13px 14px; }
-QPushButton#stop:hover { background-color: #543048; }
-QPushButton#outline { color: #C5B8FF; background: #232A45; border: 1px solid #514D7B; }
-QPushButton#outline:hover { background: #2B3555; }
-QPushButton#nav { text-align: left; color: #899BB5; background: transparent; padding: 14px 16px; border: 0; font-size: 13px; }
-QPushButton#nav:hover { color: #FFFFFF; background: #19243A; }
-QPushButton#navActive { text-align: left; color: #CFC5FF; background: #211E3D; border: 1px solid #36325B; border-radius: 11px; padding: 13px 16px; font-size: 13px; }
-QPushButton#chip { background-color: #1B293C; border-color: #304059; font-size: 11px; padding: 7px 12px; color: #A7BDD8; }
-QPushButton#eye { padding: 6px; min-width: 34px; background: transparent; border: 0px; color: #ABB8CB; }
-QLineEdit, QPlainTextEdit, QComboBox, QSpinBox { border: 1px solid #34435C; background-color: #0C1626; border-radius: 10px; color: #F0F5FF; padding: 9px 12px; selection-background-color: #6756A9; }
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #8C83E6; background-color: #0E192C; }
-QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled { color: #70819A; }
-QLineEdit { min-height: 23px; }
-QLineEdit::placeholder, QPlainTextEdit::placeholder { color: #63738A; }
-QPlainTextEdit#task { font-size: 13px; line-height: 1.5; padding: 13px; }
-QTabWidget::pane { border: 1px solid #29394F; border-radius: 12px; background: #101A2C; top: -1px; }
-QTabBar::tab { background: #121D30; color: #8999B3; border: 1px solid #29394F; border-bottom: 0; padding: 10px 18px; margin-right: 5px; border-top-left-radius: 9px; border-top-right-radius: 9px; }
-QTabBar::tab:selected { background: #242345; color: #D7CCFF; border-color: #60578C; }
-QListWidget { color: #C7D4EC; background: #0B1526; border: 1px solid #34435C; border-radius: 9px; padding: 5px; }
-QListWidget::item { padding: 6px 8px; border-radius: 6px; }
-QListWidget::item:selected { background: #302F56; color: #EEE9FF; }
-QPlainTextEdit#responseDetail { background: #081321; border: 1px solid #283951; border-radius: 9px; font-family: 'Cascadia Code','Consolas',monospace; color: #C3D8EF; font-size: 11px; padding: 10px; }
-QPlainTextEdit#console { background: #0A1322; border: 0px; border-radius: 10px; font-family: 'Cascadia Code','Consolas',monospace; color: #B7D1E0; font-size: 11px; padding: 10px; }
-QComboBox::drop-down { width: 28px; border: 0px; }
-QComboBox QAbstractItemView { color: #EAF0FF; background: #111D2F; selection-background-color: #493F83; }
-QSpinBox { padding-right: 4px; }
-QCheckBox { color: #A7B7CC; font-size: 12px; spacing: 8px; }
-QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #566584; border-radius: 4px; background: #101D2E; }
-QCheckBox::indicator:checked { border: 1px solid #A18FFF; background: #9181E9; }
-QScrollArea { border: none; background: transparent; }
-QScrollBar:vertical { width: 9px; background: transparent; }
-QScrollBar::handle:vertical { background: #30415A; border-radius: 4px; min-height: 22px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-QScrollBar:horizontal { height: 8px; background: transparent; }
-QScrollBar::handle:horizontal { background: #30415A; border-radius: 4px; }
-QToolTip { background: #19263B; color: #DCE9FD; border: 1px solid #4E6481; padding: 7px; }
-"""
 
 
 def label(text: str, name: str = 'muted', wrap: bool = False) -> QLabel:
@@ -116,13 +43,10 @@ def panel_layout(title: str, eyebrow: str, layout: QVBoxLayout) -> QFrame:
     frame.setObjectName('panel')
     frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     outer = QVBoxLayout(frame)
-    outer.setContentsMargins(20, 17, 20, 18)
-    outer.setSpacing(13)
-    top = QHBoxLayout()
-    top.addWidget(label(eyebrow, 'kicker'))
-    top.addStretch()
-    outer.addLayout(top)
-    outer.addWidget(label(title, 'sectitle'))
+    outer.setContentsMargins(0, 14, 0, 12)
+    outer.setSpacing(12)
+    if title:
+        outer.addWidget(label(title, 'sectitle'))
     outer.addLayout(layout)
     return frame
 
@@ -161,14 +85,14 @@ class GlobalStopFilter(QAbstractNativeEventFilter):
                 pass
 
 
-class Studio(QMainWindow):
+class Studio(StudioUI, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Aurora · Computer Use Studio')
         if ICON.exists():
             self.setWindowIcon(QIcon(str(ICON)))
-        self.resize(1370, 880)
-        self.setMinimumSize(1090, 760)
+        self.resize(1440, 900)
+        self.setMinimumSize(980, 700)
         self.settings = QSettings('AuroraStudio', 'ComputerUse')
         self.agent: AgentThread | None = None
         self.test_thread: VisionTestThread | None = None
@@ -189,337 +113,23 @@ class Studio(QMainWindow):
     def _dark_titlebar(self):
         if sys.platform == 'win32':
             try:
-                value = ctypes.c_int(1)
+                value = ctypes.c_int(1 if getattr(self, 'theme', 'light') == 'dark' else 0)
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(int(self.winId()), 20, ctypes.byref(value), 4)
             except Exception:
                 pass
 
-    def _make_ui(self):
-        root = QWidget()
-        root.setObjectName('root')
-        self.setCentralWidget(root)
-        base = QHBoxLayout(root)
-        base.setContentsMargins(0, 0, 0, 0)
-        base.setSpacing(0)
-        base.addWidget(self._make_sidebar())
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        inner = QWidget()
-        self.main_body = QVBoxLayout(inner)
-        self.main_body.setContentsMargins(29, 27, 29, 24)
-        self.main_body.setSpacing(22)
-        self.main_body.addLayout(self._make_header())
-        self.main_body.addLayout(self._make_metrics())
-
-        columns = QHBoxLayout()
-        columns.setSpacing(18)
-        left = QVBoxLayout()
-        left.setSpacing(18)
-        left.addWidget(self._make_connection())
-        left.addWidget(self._make_task())
-        left.addStretch()
-        right = QVBoxLayout()
-        right.setSpacing(18)
-        right.addWidget(self._make_preview())
-        right.addWidget(self._make_diagnostics(), 1)
-        right.addStretch()
-        columns.addLayout(left, 11)
-        columns.addLayout(right, 10)
-        self.main_body.addLayout(columns, 1)
-        self.main_body.addWidget(label('LOCAL EXECUTION   •   屏幕截图会发送至你指定的第三方 API   •   建议在隔离桌面中使用', 'sidecaption'))
-        scroll.setWidget(inner)
-        right_shell = QWidget()
-        right_shell.setObjectName('root')
-        right_v = QVBoxLayout(right_shell)
-        right_v.setContentsMargins(0, 0, 0, 0)
-        right_v.setSpacing(0)
-        right_v.addWidget(scroll, 1)
-        right_v.addWidget(self._make_action_dock())
-        base.addWidget(right_shell, 1)
-
-    def _make_sidebar(self):
-        side = QFrame()
-        side.setObjectName('sidebar')
-        side.setFixedWidth(220)
-        v = QVBoxLayout(side)
-        v.setContentsMargins(18, 27, 18, 24)
-        v.setSpacing(0)
-        brand = QHBoxLayout()
-        mark = label('✦', 'brandmark')
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setFixedSize(46, 46)
-        brand.addWidget(mark)
-        brand_labels = QVBoxLayout()
-        brand_labels.setSpacing(1)
-        brand_labels.addWidget(label('AURORA', 'brandname'))
-        brand_labels.addWidget(label('COMPUTER STUDIO', 'sidecaption'))
-        brand.addLayout(brand_labels)
-        v.addLayout(brand)
-        v.addSpacing(50)
-        v.addWidget(label('WORKSPACE', 'sidecaption'))
-        v.addSpacing(12)
-        work = QPushButton('  ◈    任务工作台')
-        work.setObjectName('navActive')
-        work.clicked.connect(self._go_top)
-        v.addWidget(work)
-        v.addSpacing(9)
-        guide = QPushButton('  ◷    快速使用指南')
-        guide.setObjectName('nav')
-        guide.clicked.connect(self._show_guide)
-        v.addWidget(guide)
-        v.addSpacing(6)
-        sample = QPushButton('  ◫    复制日志')
-        sample.setObjectName('nav')
-        sample.clicked.connect(self._copy_logs)
-        v.addWidget(sample)
-        v.addSpacing(6)
-        inspect = QPushButton('  ▤    API 响应记录')
-        inspect.setObjectName('nav')
-        inspect.clicked.connect(lambda: (self._restore(), self.diagnostics.setCurrentIndex(1)))
-        v.addWidget(inspect)
-        v.addSpacing(6)
-        answer = QPushButton('  ✉    用户回复 / 继续')
-        answer.setObjectName('nav')
-        answer.clicked.connect(self._show_question_panel)
-        v.addWidget(answer)
-        v.addStretch()
-        v.addWidget(label('SYSTEM / LOCAL HOST', 'sidecaption'))
-        v.addSpacing(11)
-        sys_card = QFrame()
-        sys_card.setObjectName('softpanel')
-        cv = QVBoxLayout(sys_card)
-        cv.setContentsMargins(14, 14, 14, 14)
-        cv.setSpacing(6)
-        cv.addWidget(label('●  自动执行已就绪', 'good'))
-        cv.addWidget(label('鼠标移至屏幕左上角紧急停止。也可使用系统托盘菜单停止。', 'tiny', True))
-        v.addWidget(sys_card)
-        v.addSpacing(15)
-        v.addWidget(label('AURORA  ·  v1.7  /  WINDOWS 11', 'sidecaption'))
-        return side
-
-    def _make_header(self):
-        h = QHBoxLayout()
-        left = QVBoxLayout()
-        left.setSpacing(6)
-        left.addWidget(label('AI DESKTOP AUTOMATION  /  YOUR WORKSPACE', 'kicker'))
-        left.addWidget(label('让 AI 替你操作电脑', 'headline'))
-        left.addWidget(label('连接视觉模型，描述任务，然后交给 Aurora。你可以随时中止。', 'subtitle'))
-        h.addLayout(left)
-        h.addStretch()
-        badge = QFrame()
-        badge.setObjectName('softpanel')
-        badge_h = QHBoxLayout(badge)
-        badge_h.setContentsMargins(15, 10, 15, 10)
-        badge_h.addWidget(label('◉  WINDOWS 11  ·  LOCAL', 'good'))
-        h.addWidget(badge)
-        return h
-
-    def _metric(self, eyebrow, value, detail):
-        card = QFrame()
-        card.setObjectName('metric')
-        v = QVBoxLayout(card)
-        v.setContentsMargins(17, 12, 17, 13)
-        v.setSpacing(4)
-        v.addWidget(label(eyebrow, 'sidecaption'))
-        number = label(value, 'value')
-        v.addWidget(number)
-        v.addWidget(label(detail, 'tiny'))
-        return card, number
-
-    def _make_metrics(self):
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        a, self.connection_metric = self._metric('API CONNECTION', '未验证', '等待连接视觉模型')
-        b, self.task_metric = self._metric('AGENT STATUS', '待命中', '准备运行任务')
-        c, self.step_metric = self._metric('ACTION COUNT', '00 / 100', '自动执行 · 可随时停止')
-        for item in (a, b, c):
-            row.addWidget(item)
-        return row
-
-    def _input_with_label(self, layout, title, placeholder='', password=False):
-        layout.addWidget(label(title, 'fieldlabel'))
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        if password:
-            edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(edit)
-        return edit
-
-    def _make_connection(self):
-        f = QVBoxLayout()
-        f.setSpacing(10)
-        self.endpoint = self._input_with_label(f, 'API 端点 / Base URL', 'https://your-provider.com/v1')
-        f.addWidget(label('支持 /v1 或完整 /chat/completions 路径', 'tiny'))
-        self.model = self._input_with_label(f, '视觉模型名称', '例如：your-vision-model')
-        f.addWidget(label('API 密钥', 'fieldlabel'))
-        secret = QHBoxLayout()
-        secret.setSpacing(5)
-        self.api_key = QLineEdit()
-        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText('sk-••••••••••••••••••••')
-        secret.addWidget(self.api_key, 1)
-        eye = QPushButton('◉')
-        eye.setToolTip('显示或隐藏 API Key')
-        eye.setObjectName('eye')
-        eye.clicked.connect(self._toggle_secret)
-        secret.addWidget(eye)
-        f.addLayout(secret)
-        minor = QHBoxLayout()
-        minor.addWidget(label('鉴权方式', 'fieldlabel'))
-        self.auth = QComboBox()
-        self.auth.addItem('Bearer Token', 'bearer')
-        self.auth.addItem('x-api-key', 'x-api-key')
-        self.auth.addItem('无鉴权 / 本地模型', 'none')
-        self.auth.setMaximumWidth(210)
-        minor.addWidget(self.auth)
-        f.addLayout(minor)
-        opts = QHBoxLayout()
-        self.remember = QCheckBox('使用 Windows 凭据管理器记住密钥')
-        self.remember.setToolTip('密钥不保存到配置文件；勾选时使用系统凭据保险库（keyring）。')
-        opts.addWidget(self.remember)
-        f.addLayout(opts)
-        buttons = QHBoxLayout()
-        self.check_btn = QPushButton('◎  测试连接 / 识图')
-        self.check_btn.setObjectName('outline')
-        self.check_btn.clicked.connect(self._check_connection)
-        buttons.addWidget(self.check_btn)
-        self.connection_info = label('密钥默认只保存在本次运行的内存中', 'tiny', True)
-        buttons.addWidget(self.connection_info, 1)
-        f.addLayout(buttons)
-        return panel_layout('连接你的 AI 模型', '01  /  MODEL CONNECTION', f)
-
-    def _make_task(self):
-        v = QVBoxLayout()
-        v.setSpacing(11)
-        v.addWidget(label('告诉 Agent 你想做什么', 'fieldlabel'))
-        self.task_input = QPlainTextEdit()
-        self.task_input.setObjectName('task')
-        self.task_input.setFixedHeight(114)
-        self.task_input.setPlaceholderText('例如：打开记事本，输入「你好，我是 Aurora」，然后检查文本是否正确。')
-        v.addWidget(self.task_input)
-        v.addWidget(label('任务运行状态 · 总体目标锁定，进度由运行线程持续更新', 'fieldlabel'))
-        status_row = QHBoxLayout()
-        status_row.setSpacing(9)
-        goal_col = QVBoxLayout()
-        goal_col.addWidget(label('🔒 总体目标（只读）', 'tiny'))
-        self.locked_goal_view = QPlainTextEdit()
-        self.locked_goal_view.setReadOnly(True)
-        self.locked_goal_view.setObjectName('responseDetail')
-        self.locked_goal_view.setPlaceholderText('启动任务时锁定用户目标；模型不能修改')
-        self.locked_goal_view.setFixedHeight(106)
-        goal_col.addWidget(self.locked_goal_view)
-        status_row.addLayout(goal_col, 1)
-        progress_col = QVBoxLayout()
-        progress_col.addWidget(label('当前已完成 / 正在进行 / 下一步（只读）', 'tiny'))
-        self.task_progress_view = QPlainTextEdit()
-        self.task_progress_view.setReadOnly(True)
-        self.task_progress_view.setObjectName('responseDetail')
-        self.task_progress_view.setPlaceholderText('任务启动后显示持续更新的执行进度')
-        self.task_progress_view.setFixedHeight(106)
-        progress_col.addWidget(self.task_progress_view)
-        status_row.addLayout(progress_col, 1)
-        v.addLayout(status_row)
-        chiprow = QHBoxLayout()
-        chiprow.setSpacing(7)
-        for text, task in [
-            ('✦  记事本演示', '打开记事本，输入「你好，我是 Aurora Computer Use」，然后检查文字是否正确。不要保存文件。'),
-            ('⌘  浏览器演示', '打开浏览器，访问 example.com，并告诉我页面标题。不要提交任何表单。'),
-        ]:
-            btn = QPushButton(text)
-            btn.setObjectName('chip')
-            btn.clicked.connect(lambda checked=False, txt=task: self.task_input.setPlainText(txt))
-            chiprow.addWidget(btn)
-        chiprow.addStretch()
-        v.addLayout(chiprow)
-        options = QHBoxLayout()
-        options.setSpacing(9)
-        options.addWidget(label('最多步骤', 'fieldlabel'))
-        self.steps = QSpinBox()
-        self.steps.setRange(1, 200)
-        self.steps.setValue(100)
-        self.steps.setFixedWidth(70)
-        options.addWidget(self.steps)
-        options.addSpacing(8)
-        options.addWidget(label('开始延迟', 'fieldlabel'))
-        self.delay = QSpinBox()
-        self.delay.setRange(0, 30)
-        self.delay.setSuffix(' 秒')
-        self.delay.setValue(3)
-        self.delay.setFixedWidth(80)
-        options.addWidget(self.delay)
-        options.addStretch()
-        v.addLayout(options)
-        self.vision_check = QCheckBox('任务启动时先验证模型能看懂图片')
-        self.vision_check.setChecked(True)
-        v.addWidget(self.vision_check)
-        v.addWidget(label('支持鼠标按住拖动、四向滚轮、长按与组合键；截图可矩形框选。', 'tiny', True))
-        v.addWidget(label('执行中若模型返回 ask_user，会自动显示确认问题；回复后从原步骤继续。', 'tiny', True))
-        v.addWidget(label('点击窗口底部的「启动自动任务」即可开始，无需逐步审批。', 'tiny', True))
-        return panel_layout('创建自动化任务', '02  /  TASK COMPOSER', v)
-
-    def _make_action_dock(self):
-        dock = QFrame()
-        dock.setObjectName('dock')
-        h = QHBoxLayout(dock)
-        h.setContentsMargins(26, 13, 29, 13)
-        h.setSpacing(12)
-        v = QVBoxLayout()
-        v.setSpacing(2)
-        v.addWidget(label('✦  AUTO PILOT', 'accent'))
-        v.addWidget(label('自动最小化 · 后台运行 · 可随时中止', 'tiny'))
-        h.addLayout(v)
-        h.addStretch()
-        self.stop_btn = QPushButton('■  停止任务')
-        self.stop_btn.setObjectName('stop')
-        self.stop_btn.setMinimumWidth(132)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop_task)
-        h.addWidget(self.stop_btn)
-        self.start_btn = QPushButton('✦   启动自动任务   →')
-        self.start_btn.setObjectName('primary')
-        self.start_btn.setMinimumWidth(190)
-        self.start_btn.clicked.connect(self.start_task)
-        h.addWidget(self.start_btn)
-        return dock
-
-    def _make_preview(self):
-        v = QVBoxLayout()
-        v.setSpacing(12)
-        inner = QFrame()
-        inner.setObjectName('previewInner')
-        inner.setMinimumHeight(228)
-        inner_v = QVBoxLayout(inner)
-        inner_v.setContentsMargins(12, 12, 12, 12)
-        self.preview = QLabel('')
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(192)
-        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.preview.setText('◉\n\n桌面观察画面将在这里显示\n等待任务开始…')
-        self.preview.setStyleSheet('color: #607992; font-size: 12px; line-height: 180%;')
-        inner_v.addWidget(self.preview, 1)
-        v.addWidget(inner)
-        foot = QHBoxLayout()
-        self.preview_info = label('◌  NO SIGNAL', 'sidecaption')
-        foot.addWidget(self.preview_info)
-        foot.addStretch()
-        foot.addWidget(label('JPEG  ·  VISION INPUT', 'sidecaption'))
-        v.addLayout(foot)
-        return panel_layout('实时屏幕观察', '03  /  LIVE OBSERVATION', v)
 
     def _make_diagnostics(self):
         self.diagnostics = QTabWidget()
         self.diagnostics.setDocumentMode(True)
-        self.diagnostics.addTab(self._make_trace(), '◷  执行日志')
-        self.diagnostics.addTab(self._make_api_responses(), '▤  API 响应')
-        self.diagnostics.addTab(self._make_question_panel(), '✉  用户回复')
+        self.diagnostics.addTab(scrollable(self._make_trace()), '执行日志')
+        self.diagnostics.addTab(scrollable(self._make_api_responses()), 'API 响应')
+        self.diagnostics.addTab(scrollable(self._make_question_panel()), '用户回复')
         return self.diagnostics
 
     def _make_question_panel(self):
         v = QVBoxLayout()
         v.setSpacing(10)
-        v.addWidget(label('模型提出问题时，整个任务会暂停。你可以在这里回复，不必重新启动任务。', 'tiny', True))
         self.question_status = label('当前没有需要回复的问题', 'good', True)
         v.addWidget(self.question_status)
         v.addWidget(label('Agent 的问题', 'fieldlabel'))
@@ -527,24 +137,24 @@ class Studio(QMainWindow):
         self.question_view.setObjectName('responseDetail')
         self.question_view.setReadOnly(True)
         self.question_view.setPlaceholderText('需要确认时，模型的问题将完整显示在这里…')
-        self.question_view.setMinimumHeight(115)
-        self.question_view.setMaximumHeight(230)
+        self.question_view.setFixedHeight(110)
+        self.question_view.setAccessibleName('Agent 的问题')
         v.addWidget(self.question_view)
         v.addWidget(label('你的回复', 'fieldlabel'))
         self.reply_editor = QPlainTextEdit()
-        self.reply_editor.setObjectName('task')
+        self.reply_editor.setObjectName('reply')
         self.reply_editor.setPlaceholderText('例如：选择第 2 项，请返回首页，找出列表里的第三个视频，然后继续原来的任务。')
-        self.reply_editor.setMinimumHeight(85)
-        self.reply_editor.setMaximumHeight(125)
+        self.reply_editor.setFixedHeight(100)
+        self.reply_editor.setAccessibleName('你的回复')
         self.reply_editor.setEnabled(False)
         v.addWidget(self.reply_editor)
         actions = QHBoxLayout()
-        self.send_reply_btn = QPushButton('↗  发送回复并继续任务')
+        self.send_reply_btn = QPushButton('发送回复并继续任务')
         self.send_reply_btn.setObjectName('primary')
         self.send_reply_btn.setEnabled(False)
         self.send_reply_btn.clicked.connect(self._submit_user_reply)
         actions.addWidget(self.send_reply_btn, 1)
-        self.stop_question_btn = QPushButton('■  停止任务')
+        self.stop_question_btn = QPushButton('停止任务')
         self.stop_question_btn.setObjectName('stop')
         self.stop_question_btn.setEnabled(False)
         self.stop_question_btn.clicked.connect(self.stop_task)
@@ -552,7 +162,9 @@ class Studio(QMainWindow):
         v.addLayout(actions)
         self.reply_tip = label('提交后 Aurora 会自动最小化，然后继续观察之前的桌面。', 'tiny', True)
         v.addWidget(self.reply_tip)
-        return panel_layout('人工确认 · 继续对话', '06  /  HUMAN-IN-THE-LOOP', v)
+        panel = panel_layout('', '06  /  HUMAN-IN-THE-LOOP', v)
+        panel.layout().addStretch()
+        return panel
 
     def _make_api_responses(self):
         v = QVBoxLayout()
@@ -720,7 +332,7 @@ class Studio(QMainWindow):
         v.addWidget(self.console)
         self._append_log('info', 'Aurora Engine 已就绪，等待连接和任务')
         v.addWidget(label('敏感输入内容不写入日志；中止任务请用托盘、停止按钮或鼠标左上角。', 'tiny', True))
-        return panel_layout('Execution Trace', '04  /  ACTIVITY LOG', v)
+        return panel_layout('', '04  /  ACTIVITY LOG', v)
 
     def _make_tray(self):
         self.tray = QSystemTrayIcon(QIcon(str(ICON)) if ICON.exists() else self.windowIcon(), self)
@@ -753,10 +365,10 @@ class Studio(QMainWindow):
 
     def _go_top(self):
         self._restore()
+        self._navigate(0)
 
     def _show_question_panel(self):
-        self._restore()
-        self.diagnostics.setCurrentIndex(2)
+        self._open_diagnostics(2)
         if self.pending_question_step is not None:
             self.reply_editor.setFocus(Qt.FocusReason.OtherFocusReason)
 
@@ -915,7 +527,7 @@ class Studio(QMainWindow):
             return
         self._save_preferences()
         self.check_btn.setEnabled(False)
-        self.check_btn.setText('◌  验证中…')
+        self.check_btn.setText('验证中…')
         self.connection_metric.setText('连接中…')
         self._append_log('info', f'正在验证连接 · 模型 {config.model}')
         self.test_thread = VisionTestThread(config)
@@ -933,7 +545,7 @@ class Studio(QMainWindow):
         self._append_log('ok' if ok else 'warn', message)
 
     def _test_finished(self):
-        self.check_btn.setText('◎  测试连接 / 识图')
+        self.check_btn.setText('测试连接 / 识图')
         self.check_btn.setEnabled(not self.busy)
         self.test_thread = None
 
@@ -943,6 +555,7 @@ class Studio(QMainWindow):
         try:
             config = self._build_config()
         except ValueError as exc:
+            self._navigate(1 if not self.endpoint.text().strip() or not self.model.text().strip() or (self.auth.currentData() != 'none' and not self.api_key.text().strip()) else 0)
             QMessageBox.warning(self, '无法开始任务', str(exc))
             return
         self._save_preferences()
@@ -1017,7 +630,7 @@ class Studio(QMainWindow):
         if pix.loadFromData(data):
             self.current_pixmap = pix
             self._show_preview()
-            self.preview_info.setText(f'●  LIVE  ·  {width} × {height}')
+            self.preview_info.setText(f'最近观察  ·  {width} × {height}')
 
     def _show_preview(self):
         if self.current_pixmap and not self.current_pixmap.isNull():
@@ -1028,6 +641,7 @@ class Studio(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._sync_observer()
         if self.current_pixmap:
             QTimer.singleShot(0, self._show_preview)
 
@@ -1038,6 +652,7 @@ class Studio(QMainWindow):
                   'error': ('运行异常', 'warn')}
         human, level = labels.get(status, (status, 'info'))
         self._append_log(level, f'{human} · {summary}')
+        self._navigate(0)
         if status == 'error':
             self.diagnostics.setCurrentIndex(1)  # show the preserved response on failure
         self._set_status('idle', human)
@@ -1065,6 +680,8 @@ class Studio(QMainWindow):
                        self.task_input, self.remember):
             widget.setEnabled(on)
         self.check_btn.setEnabled(on)
+        for widget in self.example_buttons:
+            widget.setEnabled(on)
 
     def _append_log(self, level, message):
         stamp = datetime.now().strftime('%H:%M:%S')
@@ -1076,8 +693,11 @@ class Studio(QMainWindow):
         if len(self.log_plain) > 450:
             self.log_plain = self.log_plain[-450:]
         if hasattr(self, 'console'):
+            bar = self.console.verticalScrollBar()
+            follow = bar.value() >= bar.maximum() - 24
+            before = bar.value()
             self.console.appendPlainText(line)
-            self.console.moveCursor(QTextCursor.MoveOperation.End)
+            bar.setValue(bar.maximum() if follow else before)
 
     def _copy_logs(self):
         QApplication.clipboard().setText('\n'.join(self.log_plain))
@@ -1119,11 +739,12 @@ def main():
     app.setOrganizationName('AuroraStudio')
     app.setQuitOnLastWindowClosed(True)
     app.setStyle('Fusion')
-    app.setStyleSheet(QSS)
     if ICON.exists():
         app.setWindowIcon(QIcon(str(ICON)))
-    font = QFont('Segoe UI', 10)
-    app.setFont(font)
+    if sys.platform == 'win32':
+        font = QFont('Segoe UI', 10)
+        font.setFamilies(['Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei'])
+        app.setFont(font)
     window = Studio()
     window.show()
     stop_filter = GlobalStopFilter(window)
