@@ -18,6 +18,7 @@ from PySide6.QtCore import QThread, Signal
 
 import engine
 from response_store import ResponseStore
+from clipboard_flow import ClipboardFlow
 from run_trace import RunTrace
 from video_progress import VideoProgress, requested_video_number, is_next_video_action
 from task_context import TaskLedger
@@ -254,6 +255,7 @@ class AgentThread(QThread):
             video = VideoProgress(target_number) if target_number else None
             invalid_done_count = 0
             screenshot_retry_count = 0
+            screenshot_flow = ClipboardFlow()
             if video:
                 self.log_line.emit('info', f'检测到目标：第 {video.target} 个视频。启用被动视频计数；截图和 TXT 必须经由 Windows 图形界面保存。')
                 self.progress.emit(f'视频 0/{video.target}')
@@ -308,6 +310,10 @@ class AgentThread(QThread):
                     history = history[-14:]
                     if screenshot_retry_count == 2:
                         self.log_line.emit('warn','检测到重复尝试截图：已提醒 Agent 改用长按拖动选区，不会强制终止。')
+                flow_prompt = screenshot_flow.screenshot_prompt()
+                if flow_prompt:
+                    history.append(flow_prompt)
+                    history = history[-14:]
                 self.log_line.emit('info', f'步骤 {step} / {c.max_steps} · 请求模型分析屏幕')
                 # Retry only transient / malformed responses, not arbitrary HTTP 4xx or
                 # action-executor exceptions. Record each attempt in the API journal.
@@ -361,6 +367,8 @@ class AgentThread(QThread):
                                 gui_kind=action['gui_file']['kind'], accepted=accepted)
                     self.log_line.emit('info' if accepted else 'warn', note)
                     history.append(note)
+                    if accepted:
+                        screenshot_flow.confirmed_file(action['gui_file']['kind'])
                     history = history[-14:]
                     self.progress.emit(f'视频 {video.index}/{video.target} · {video.stage}')
 
@@ -437,6 +445,12 @@ class AgentThread(QThread):
                 self._trace('execution_started', action=kind,
                             keys=action.get('keys') if kind == 'keypress' else None)
                 result = engine.execute_action(pg, action, frame, state=self._input_state)
+                clip_note = screenshot_flow.record(action)
+                if clip_note:
+                    self._trace('clipboard_flow', stage=screenshot_flow.stage,
+                                recaptures=screenshot_flow.recaptures, paste_attempts=screenshot_flow.paste_attempts)
+                    history.append(clip_note)
+                    self.log_line.emit('info', '截图剪贴板流程 · ' + clip_note)
                 self._trace('execution_ok', action=kind,
                             keys=action.get('keys') if kind == 'keypress' else None)
                 ledger.note_model_observation(action.get('task_state'))

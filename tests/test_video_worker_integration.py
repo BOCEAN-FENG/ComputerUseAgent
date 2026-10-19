@@ -46,6 +46,12 @@ class VideoWorkerIntegration(TestCase):
         task='打开抖音网页版刷到第三个视频，截取一帧 PNG 并在桌面写 TXT'
         cfg=worker.RunConfig('https://example.org/v1/chat/completions','dummy','bearer','mock',task,30,0,1600,False,0)
         ag=worker.AgentThread(cfg)
+        # Works with both native Qt signals and the offline signal stub.
+        done_events=[]
+        if hasattr(ag.done, 'connect'):
+            ag.done.connect(lambda *args: done_events.append(args))
+        else:
+            done_events=ag.done.emissions
         ag._sleep=lambda *_:False
         pg=PgStub()
         actions=[
@@ -77,7 +83,7 @@ class VideoWorkerIntegration(TestCase):
                   patch.object(worker.httpx,'Client',FakeClient),
                   patch.dict('os.environ',{'LOCALAPPDATA':temp})):
                 ag.run()
-            self.assertEqual(ag.done.emissions[-1][0],'success')
+            self.assertEqual(done_events[-1][0],'success')
             self.assertEqual(pg.calls,[('hotkey',('down',)),('hotkey',('down',)),
                                        ('hotkey',('printscreen',)),('hotkey',('win','r'))])
             self.assertTrue(any('第 2' in text for text in contexts))
